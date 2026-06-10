@@ -33,11 +33,12 @@ This plugin closes both gaps while keeping commit & push firmly in your hands.
 | Tool | Arguments | Purpose |
 |---|---|---|
 | `list_changelists` | — | Read every local changelist with its files (project-relative paths; `changeType` ∈ MODIFIED/ADDED/DELETED/MOVED), plus `isDefault`/`isReadOnly`, and the project's `unversionedFiles` (new, not-yet-tracked files). |
+| `refresh_changelists` | — | Re-scan the working tree and recompute changelist state. **Call this after editing files outside the IDE** (e.g. via Claude's own tools), before `list_changelists` — IntelliJ doesn't see external edits until it refreshes. |
 | `get_changelist_diff` | `name` | Unified diff for one changelist (capped at 200 KB), for drafting a commit message. |
 | `create_changelist` | `name`, `comment?`, `files?`, `setActive?` | Create a changelist and put files into it: modified files are moved; **unversioned (new) files are scheduled for addition** and reported in `addedFiles`. Non-matching / missing files go to `skippedFiles`; the call still succeeds. |
 | `move_to_changelist` | `name`, `files` | Put files into an **existing** changelist (modified → moved, new → scheduled for addition / `addedFiles`). Fails if the changelist is missing (never auto-creates) or read-only. |
 | `move_lines_to_changelist` | `name`, `file`, `lineRanges` | Move only specific **hunks** of one file into an existing changelist, leaving its other changes in place. See [Parallel sessions](#parallel-sessions). |
-| `set_changelist_comment` | `name`, `comment` | Set a changelist's comment, which IntelliJ uses as the **default commit message** for that changelist — so the commit dialog is pre-filled. |
+| `set_changelist_comment` | `name`, `comment` | Set a changelist's comment, which IntelliJ uses as the **default commit message** — so the commit dialog is pre-filled. **Use a *named* changelist:** the default `Changes` ignores its comment (the dialog shows the last commit message instead). |
 | `delete_changelist` | `name`, `moveContentsTo?` | Delete a changelist, relocating its files first (default target `"Default"`). Refuses to delete `Default`. |
 
 All five register through a single `McpToolset`; they appear alongside the IDE's built-in MCP tools.
@@ -45,9 +46,12 @@ All five register through a single `McpToolset`; they appear alongside the IDE's
 ## Intended workflow
 
 1. The agent finishes implementing.
-2. It calls `list_changelists` and **leaves user-curated buckets alone** (anything read-only, or named like
-   "do not commit", "local", "wip-keep").
-3. It groups the new changes into logical changelists with `create_changelist` / `move_to_changelist`.
+2. It calls `refresh_changelists` (its edits were written to disk outside the IDE), then `list_changelists`,
+   and **leaves user-curated buckets alone** (anything read-only, or named like "do not commit", "local",
+   "wip-keep").
+3. It groups the new changes into logical **named** changelists with `create_changelist` /
+   `move_to_changelist` — one per intended commit. (Not the default `Changes`: the commit dialog ignores
+   the default changelist's description, so a comment set there won't pre-fill — see below.)
 4. It drafts a message from `get_changelist_diff` and writes it with `set_changelist_comment`, so your
    commit dialog opens pre-filled — no copy/paste.
 5. **You** review in IntelliJ, reshuffle freely, and commit per group. **You** push. The plugin never does.

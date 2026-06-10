@@ -62,6 +62,10 @@ data class CreateResult(
 @Serializable
 data class DeleteResult(val deleted: Boolean)
 
+/** Result for `refresh_changelists`. Call `list_changelists` afterward to read the refreshed state. */
+@Serializable
+data class RefreshResult(val refreshed: Boolean)
+
 /** Result for `set_changelist_comment`. */
 @Serializable
 data class CommentResult(val name: String, val comment: String)

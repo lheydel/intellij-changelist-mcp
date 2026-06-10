@@ -17,11 +17,13 @@ import com.intellij.openapi.vcs.changes.ChangeListManagerEx
 import com.intellij.openapi.vcs.changes.ChangeListManagerImpl
 import com.intellij.openapi.vcs.changes.ChangesUtil
 import com.intellij.openapi.vcs.changes.LocalChangeList
+import com.intellij.openapi.vcs.changes.VcsDirtyScopeManager
 import com.intellij.openapi.vcs.changes.actions.ScheduleForAdditionAction
 import com.intellij.openapi.vcs.ex.PartialLocalLineStatusTracker
 import com.intellij.openapi.vcs.ex.Range
 import com.intellij.openapi.vcs.impl.LineStatusTrackerManager
 import com.intellij.openapi.vfs.LocalFileSystem
+import com.intellij.openapi.vfs.VfsUtil
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.util.Consumer
 import kotlinx.coroutines.Dispatchers
@@ -30,7 +32,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.io.StringWriter
 import java.nio.file.Path
-import java.util.BitSet
 
 /**
  * Contributes changelist-management tools to IntelliJ's built-in MCP server.
@@ -63,6 +64,23 @@ class ChangelistToolset : McpToolset {
             val unversioned = clm.unversionedFilesPaths.map { relativizePath(basePath, it.path) }
             ChangelistsResult(changelists = lists, unversionedFiles = unversioned)
         }
+    }
+
+    @McpTool
+    @McpDescription("Re-scan the working tree so IntelliJ sees files changed outside the IDE, and recompute changelist state. Call this BEFORE list_changelists / the move tools whenever you have created, edited, or deleted files with Claude's own file tools — IntelliJ does not detect external edits until it re-scans, so those tools would otherwise miss your changes. Blocks until the re-scan completes; then call list_changelists to read the refreshed state.")
+    suspend fun refresh_changelists(): RefreshResult {
+        val project = currentCoroutineContext().project
+        val basePath = readAction { project.basePath } ?: mcpFail("No project base path")
+        val baseDir = readAction { LocalFileSystem.getInstance().findFileByPath(basePath) }
+            ?: mcpFail("Project base directory not found in the VFS")
+
+        // Synchronous VFS refresh + VCS dirty recompute must run off-EDT and off any read/write lock.
+        withContext(Dispatchers.IO) {
+            VfsUtil.markDirtyAndRefresh(false, true, true, baseDir)
+            VcsDirtyScopeManager.getInstance(project).markEverythingDirty()
+            ChangeListManagerEx.getInstanceEx(project).waitForUpdate()
+        }
+        return RefreshResult(refreshed = true)
     }
 
     @McpTool
@@ -150,7 +168,9 @@ class ChangelistToolset : McpToolset {
         "Set a changelist's comment, which IntelliJ uses as the default commit message for that " +
             "changelist. Draft the message from get_changelist_diff, then set it here so the IDE's " +
             "commit dialog is pre-filled — the user reviews and commits without any copy/paste. " +
-            "Setting a comment never commits or pushes.",
+            "IMPORTANT: this only works on a NAMED changelist; the default changelist's comment is " +
+            "ignored by the commit dialog (it shows the last commit message instead), so group the " +
+            "changes into a named changelist first. Setting a comment never commits or pushes.",
     )
     suspend fun set_changelist_comment(
         @McpDescription("Name of the changelist whose comment (default commit message) to set.") name: String,
@@ -204,10 +224,10 @@ class ChangelistToolset : McpToolset {
                 ?: mcpFail("Line-status tracker for '$file' is no longer available")
 
             val ranges = tracker.getRanges().orEmpty()
-            val bitSet = BitSet(ranges.size)
             val movedHunks = mutableListOf<MovedHunk>()
             val matched = BooleanArray(lineRanges.size)
-            ranges.forEachIndexed { i, r ->
+            val toMove = mutableListOf<Range>()
+            ranges.forEach { r ->
                 var hit = false
                 lineRanges.forEachIndexed { j, req ->
                     if (rangeOverlaps(r, req.start, req.end)) {
@@ -216,11 +236,13 @@ class ChangelistToolset : McpToolset {
                     }
                 }
                 if (hit) {
-                    bitSet.set(i)
+                    toMove += r
                     movedHunks += MovedHunk(formatSpan(r), r.changelistId)
                 }
             }
-            if (!bitSet.isEmpty) tracker.moveToChangelist(bitSet, target)
+            // Move each matched hunk by its Range. Reassigning a hunk's changelist doesn't change line
+            // content, so the remaining Range objects stay valid across the loop.
+            for (range in toMove) tracker.moveToChangelist(range, target)
             val unmatched = lineRanges.filterIndexed { j, _ -> !matched[j] }.map { "${it.start}-${it.end}" }
             MoveLinesResult(file = file, targetChangelist = name, movedHunks = movedHunks, unmatchedRanges = unmatched)
         }
