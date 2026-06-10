@@ -1,0 +1,14 @@
+<idea-plugin>
+    <id>dev.kosmio.changelist-mcp</id>
+    <name>Changelist MCP</name>
+    <vendor>kosmio</vendor>
+    <description><![CDATA[Exposes IntelliJ local changelists to the built-in MCP server: read state, draft commit messages from a changelist diff, and organize modified files into changelists. Never commits, pushes, or mutates the working tree.]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.modules.vcs</depends>
+    <depends>com.intellij.mcpServer</depends>
+
+    <extensions defaultExtensionNs="com.intellij.mcpServer">
+        <mcpToolset implementation="dev.kosmio.changelistmcp.ChangelistToolset"/>
+    </extensions>
+</idea-plugin>
