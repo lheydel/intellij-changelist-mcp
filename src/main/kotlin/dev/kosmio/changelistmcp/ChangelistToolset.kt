@@ -297,9 +297,11 @@ class ChangelistToolset : McpToolset {
     )
 
     /**
-     * Put each project-relative path into the changelist named [targetName]: modified files are moved by
-     * their [Change]; unversioned (new) files are scheduled for addition (add-to-VCS). Partitions into
-     * moved / added / skipped (not_found / not_modified / source_readonly / add_failed).
+     * Put each project-relative path into the changelist named [targetName]: any tracked change
+     * (modified / added / deleted / moved) is moved by its [Change]; unversioned (new) files are scheduled
+     * for addition (add-to-VCS). Partitions into moved / added / skipped (not_found / not_modified /
+     * source_readonly / add_failed). Resolution is by the change set keyed on path, so deleted and moved
+     * files — which have no live VirtualFile — resolve correctly.
      *
      * Two phases by necessity: moving changes needs the write lock (done in [edtWriteAction]), but
      * scheduling for addition runs a synchronous VCS task that must NOT hold the write lock and must be
@@ -323,24 +325,32 @@ class ChangelistToolset : McpToolset {
         edtWriteAction {
             val target = clm.changeLists.firstOrNull { it.name == targetName }
                 ?: mcpFail("Changelist '$targetName' not found")
+            // Index every current change by project-relative path. Resolving via the change set (rather than
+            // a VFS lookup) is what lets DELETED and MOVED files resolve — their original path has no live
+            // VirtualFile, so findFileByPath would wrongly report them not_found.
+            val changeByPath = HashMap<String, Change>()
+            for (list in clm.changeLists) {
+                for (change in list.changes) {
+                    changeByPath[relativize(basePath, change)] = change
+                }
+            }
             val toMove = mutableListOf<Change>()
             for (rel in files) {
-                val vFile = lfs.findFileByPath("$basePath/$rel")
-                if (vFile == null) {
-                    skipped += SkippedFile(rel, "not_found")
+                val change = changeByPath[rel]
+                if (change != null) {
+                    val sourceList = clm.getChangeList(change)
+                    if (sourceList != null && sourceList.isReadOnly) {
+                        skipped += SkippedFile(rel, "source_readonly")
+                    } else {
+                        toMove += change
+                        moved += rel
+                    }
                     continue
                 }
-                val change = clm.getChange(vFile)
+                // Not a tracked change → either an unversioned new file (schedule for addition) or unknown.
+                val vFile = lfs.findFileByPath("$basePath/$rel")
                 when {
-                    change != null -> {
-                        val sourceList = clm.getChangeList(change)
-                        if (sourceList != null && sourceList.isReadOnly) {
-                            skipped += SkippedFile(rel, "source_readonly")
-                        } else {
-                            toMove += change
-                            moved += rel
-                        }
-                    }
+                    vFile == null -> skipped += SkippedFile(rel, "not_found")
                     clm.isUnversioned(vFile) -> {
                         toAdd += vFile
                         added += rel
